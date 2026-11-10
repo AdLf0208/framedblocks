@@ -1,0 +1,19 @@
+[package]
+# Ported from: FramedBlocks 11.4.0 (XFactHD/FramedBlocks, LGPL-3.0-only),
+# Minecraft Java 26.1.2 NeoForge (the upstream branch at the analysis commit);
+# the ATM10 pack ships 10.6.1 for 1.21.1. Local-only until the maintainer
+# approves publishing (ARCHITECTURE.md §8).
+name = "horizon-framedblocks"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "LGPL-3.0-only"
+description = "FramedBlocks for Horizon: a framed cube whose camo is a real block"
+
+[lib]
+# This exact source is also injected as a same-crate module by horizon-mixins.
+path = "mixins/framedblocks/runtime.rs"
+
+[workspace]
+members = ["tools/audit"]
+resolver = "2"
