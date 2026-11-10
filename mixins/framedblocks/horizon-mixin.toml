@@ -1,0 +1,172 @@
+[mod]
+id = "framedblocks"
+version = "0.1.0"
+priority = 100
+
+[compatibility]
+horizon_revision = "1d63e0a5a37a7a708eb0b32b49bf0dfeb28ed8a9"
+
+# The content half is inside this bundle (`data/framedblocks-content.hmod`, the built
+# `content/framedblocks.hmod`): this writes it to `.horizon-cache/` and appends it to
+# the dev-mod list, so one `.hnmod` installs the blocks/items and the code. The
+# registry keeps one file per project, so a split port could not be listed; AE2
+# ships the same pattern (`docs/native-mods.md`, "Data files").
+[[injection]]
+id = "embedded-content"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::mods::content_root"
+helper = "embedded_content.rs"
+bindings = [
+  { name = "root", ty = "&std::path::Path", value = "root" },
+  { name = "enabled", ty = "&std::collections::BTreeSet<String>", value = "enabled" },
+  { name = "dev", ty = "&[std::path::PathBuf]", value = "dev" },
+]
+
+# The pure camo decision model (standalone crate lib, injected as
+# `crate::game::framedblocks`).
+[[module]]
+id = "runtime"
+file = "crates/horizon-client/src/game.rs"
+name = "framedblocks"
+source = "runtime.rs"
+
+# Game-side glue: the block entity, its camo NBT, the client renderer and the
+# interaction/drop wiring.
+[[module]]
+id = "state"
+file = "crates/horizon-client/src/game.rs"
+name = "framedblocks_state"
+source = "support.rs"
+
+# The framed cube gets a block entity whatever its template (API 129).
+[[injection]]
+id = "block-entity"
+hook = "block_entity"
+hook_version = 1
+kind = "HEAD"
+helper = "block_entity.rs"
+bindings = [
+  { name = "block", ty = "&str", value = "block" },
+  { name = "entity", ty = "&mut Option<(String, horizon_world::nbt::Compound)>", value = "entity" },
+]
+
+# Clients get the camo (block id and item id) whenever the chunk or the block
+# is sent.
+[[injection]]
+id = "block-entity-update-tag"
+hook = "block_entity_update_tag"
+hook_version = 1
+kind = "HEAD"
+helper = "block_entity_update_tag.rs"
+bindings = [
+  { name = "entity", ty = "&horizon_client::containers::ModBlockEntity", value = "entity" },
+  { name = "tag", ty = "&mut Option<horizon_world::nbt::Compound>", value = "tag" },
+]
+
+# The client draws the camo block's model in the frame's place (API 71).
+[[injection]]
+id = "block-entity-submit"
+hook = "block_entity_submit"
+hook_version = 1
+kind = "HEAD"
+helper = "block_entity_submit.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "block", ty = "&str", value = "block" },
+  { name = "entity", ty = "&ModBlockEntity", value = "entity" },
+  { name = "draw", ty = "&mut BlockEntityDraw", value = "draw" },
+]
+
+# A right click with a block item applies the camo; the framed hammer removes
+# it (API 13).
+[[injection]]
+id = "use-item-on"
+hook = "use_item_on"
+hook_version = 1
+kind = "HEAD"
+helper = "use_item_on.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "stack", ty = "&horizon_client::items::ItemStack", value = "stack" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "claimed", ty = "&mut bool", value = "claimed" },
+]
+
+# A frame placed with a block item in the off hand takes it as its camo
+# (upstream's `tryApplyCamoImmediately`, API 14).
+[[injection]]
+id = "place-block"
+hook = "place_block"
+hook_version = 1
+kind = "HEAD"
+helper = "place_block.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "state", ty = "horizon_world::registry::BlockStateId", value = "state" },
+]
+
+# A player break of a frame remembers its camo for the drop roll (API 14).
+[[injection]]
+id = "destroy-block"
+hook = "destroy_block"
+hook_version = 1
+kind = "HEAD"
+helper = "destroy.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "state", ty = "horizon_world::registry::BlockStateId", value = "state" },
+]
+
+# The camo item drops beside the frame (API 75).
+[[injection]]
+id = "loot-drops"
+hook = "loot_drops"
+hook_version = 1
+kind = "HEAD"
+helper = "loot.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "context", ty = "&NativeLootDrops<'_>", value = "context" },
+  { name = "drops", ty = "&mut Vec<ItemStack>", value = "drops" },
+]
+
+# End of the server tick: resend inventories the camo use changed, and forget
+# a break that never rolled drops (a creative break).
+[[injection]]
+id = "server-tick"
+hook = "server_tick"
+hook_version = 1
+kind = "HEAD"
+helper = "server_tick.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "phase", ty = "ServerTickPhase", value = "phase" },
+]
+
+# `/framedblocks camo <x> <y> <z>`: register the usage (API 8).
+[[injection]]
+id = "register-commands"
+hook = "register_commands"
+hook_version = 1
+kind = "HEAD"
+helper = "register.rs"
+bindings = [
+  { name = "commands", ty = "&mut Vec<NativeCommand>", value = "commands" },
+]
+
+# ... and answer it with the camo the frame's block entity stores (API 8).
+[[injection]]
+id = "perform-command"
+hook = "perform_command"
+hook_version = 1
+kind = "HEAD"
+helper = "perform.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "&NativeServerPlayer", value = "player" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "ran" },
+]

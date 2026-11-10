@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "building",
+  "key": {
+    "P": "#minecraft:planks",
+    "S": "minecraft:stick"
+  },
+  "pattern": [
+    "PSP",
+    "S S",
+    "PSP"
+  ],
+  "result": {
+    "count": 4,
+    "id": "framedblocks:framed_cube"
+  }
+}

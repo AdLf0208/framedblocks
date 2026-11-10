@@ -1,0 +1,9 @@
+# Port-owned content mod for the FramedBlocks slice: the framed cube, its
+# hammer, the frame texture and the recipes. The assets are carried from
+# XFactHD/FramedBlocks (LGPL-3.0-only) for local use only (see ../LICENSE).
+id = "framedblocks"
+name = "FramedBlocks"
+version = "11.4.0"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
