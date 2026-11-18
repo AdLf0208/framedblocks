@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "condition": {
+            "type": "minecraft:survives_explosion"
+          },
+          "name": "framedblocks:framed_cube"
+        }
+      ],
+      "rolls": 1
+    }
+  ]
+}

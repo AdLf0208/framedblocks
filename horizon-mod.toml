@@ -1,0 +1,30 @@
+# FramedBlocks for Horizon — one flat SDK package (mod API 0.2).
+#
+# A framed cube whose camo is a real block: the block entity stores the camo, the client draws
+# that block's model in the frame's place, a right click with a block item applies it, the
+# framed hammer takes it off again, and a player break returns it. The frame, the hammer, the
+# frame texture and the two recipes are carried from FramedBlocks 11.4.0 (LGPL-3.0-only);
+# local-only until the maintainer approves publishing (ARCHITECTURE.md §8).
+id = "framedblocks"
+name = "FramedBlocks"
+# The port's own version, not the original mod's 11.4.0: a resubmission is always a new version
+# (the retired .hnmod bundle was 0.1.0).
+version = "0.2.0"
+description = """A framed cube whose camo is a real block: right-click the frame with any block item to make that block its appearance, take it off again with the framed hammer, or place the frame with a block in your off hand to apply it immediately. The camo is saved with the world and drops beside the frame when you break it. This slice has the full-cube frame only; every other frame shape, the frame's own flags and state-specific camos are not ported yet."""
+authors = ["XFactHD (upstream)", "Horizon native mod contributors"]
+# A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
+# beside data/ and assets/. The id is the resource namespace and the only identity: Cargo's
+# package name and version are not the mod's.
+api = "0.2"
+# "both" is the installation side, not the hook's: an integrated server belongs to the client
+# installation, so a LAN host or a single-player world needs both. A dedicated server is "server".
+side = "both"
+# The one shared value every manifest carries ("May add blocks, items, mob effects and entity
+# types"). This mod does add a block, an item and a block entity type; the field is required by
+# the schema either way.
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

@@ -1,0 +1,16 @@
+[package]
+# Ported from: FramedBlocks 11.4.0 (XFactHD/FramedBlocks, LGPL-3.0-only),
+# Minecraft Java 26.1.2 NeoForge (the upstream branch at the analysis commit);
+# the ATM10 pack ships 10.6.1 for 1.21.1. Local-only until the maintainer
+# approves publishing (ARCHITECTURE.md §8).
+name = "horizon-framedblocks"
+version = "0.2.0"
+edition = "2024"
+license = "LGPL-3.0-only"
+description = "FramedBlocks for Horizon: a framed cube whose camo is a real block"
+
+[dependencies]
+# The pinned SDK's API crate, fetched into .horizon/sdk/ by any `cargo horizon-mod` command (the
+# launcher builds against its own copy of the same build). Any other registry dependency must be
+# pinned with `horizon-launcher native-lock .` before building.
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
