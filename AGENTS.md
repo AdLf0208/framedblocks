@@ -1,7 +1,8 @@
 # Working on this Horizon native mod
 
 This is a **flat SDK package** (mod API 0.2): `horizon-mod.toml` + `Cargo.toml` + `src/lib.rs`
-(`impl mod_api::Hooks`) + `src/runtime.rs` (the pure rules and their tests) + `assets/` + `data/`.
+(`impl mod_api::Hooks`) + `src/runtime.rs` (the carried camo rules and their tests) +
+`src/camo_state.rs` (the pure parser of a stored camo state and its tests) + `assets/` + `data/`.
 Horizon retired the `.hnmod` container in the mod-API merge (#16941), so there is no
 `compatibility.json`, `mixins/<id>/`, `horizon-mixin.toml`, plan/injection schema or
 `rust-toolchain.toml` here, and none of them should be recreated. The retired tree is at
@@ -25,9 +26,15 @@ ports/tools/build-slot.sh run --job sdk-fb --port ports/framedblocks --step chec
 - `cargo horizon-mod` fetches the pinned SDK into `.horizon/sdk/` (gitignored, never packed).
   `build` packs the `.hmod`; it does **not** compile against the game — that is
   `horizon-launcher native-build . --instance <instance> --trust-native-code`.
-- **`src/runtime.rs` is byte-identical to the retired bundle's `runtime.rs` and must stay so**
-  (sha256 `26616be4…d525f`): the behaviour rules live there, `src/lib.rs` only converts SDK types
-  to theirs. New rule → a test in `runtime.rs`; new glue → a private fn and a test in `lib.rs`.
+- **`src/runtime.rs` carries the retired bundle's rules** (it was byte-identical, sha256
+  `26616be4…d525f`, until 0.2.2 renamed one variant: `Held::Block` → `Held::BlockItem`, sha256
+  `d034d5da…8abd`, because `fits --build <other>` reads a bare `Block` as the SDK's
+  non-constructible `type:Block` draft struct). The behaviour rules live there, `src/lib.rs` only
+  converts SDK types to theirs. New rule → a test in `runtime.rs` (or in `camo_state.rs` when it is
+  about a stored state); new glue → a private fn and a test in `lib.rs`.
+- **A local type or variant named `Block`, `Item`, `Recipe`, `Config` or `Attached` fails `fits
+  --build <other>`** with "can no longer be built with a literal" — the checker reads it as an SDK
+  type. Rename it (`Held::BlockItem` is this port's).
 - The block entity is a `BlockEntityPart` on `framedblocks:framed_cube`; its type is declared in
   `register` with `block_entity_type`, and the Part must also implement `BlockPart` (supertrait).
   The camo write is `BlockEntityRef::merge_data`; a removal writes empty strings, not absent keys.

@@ -9,8 +9,8 @@ id = "framedblocks"
 name = "FramedBlocks"
 # The port's own version, not the original mod's 11.4.0: a resubmission is always a new version
 # (the retired .hnmod bundle was 0.1.0).
-version = "0.2.0"
-description = """A framed cube whose camo is a real block: right-click the frame with any block item to make that block its appearance, take it off again with the framed hammer, or place the frame with a block in your off hand to apply it immediately. The camo is saved with the world and drops beside the frame when you break it. This slice has the full-cube frame only; every other frame shape, the frame's own flags and state-specific camos are not ported yet."""
+version = "0.2.2"
+description = """A framed cube whose camo is a real block state: right-click the frame with any block item to make that block its appearance, take it off again with the framed hammer, or place the frame with a block in your off hand to apply it immediately. The camo keeps its block state, so `/framedblocks camo <x> <y> <z> <state>` can set a stair's facing or a log's axis, and `/framedblocks camo <x> <y> <z>` reads back what the frame stores. It is saved with the world and drops beside the frame when you break it. This slice has the full-cube frame only; every other frame shape, the frame's own flags, the wrench's camo rotation and the camo applicator are not ported yet."""
 authors = ["XFactHD (upstream)", "Horizon native mod contributors"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
 # beside data/ and assets/. The id is the resource namespace and the only identity: Cargo's
@@ -26,5 +26,5 @@ capabilities = ["registries"]
 
 [native]
 game = "26.3"
-horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+horizon = "0a875da91dbb0fdcb7ba8c42c11341aa229af51a"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

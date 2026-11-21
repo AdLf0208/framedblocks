@@ -44,7 +44,7 @@ pub const CAMO_ITEM_TAG: &str = "CamoItem";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Held<'a> {
     /// A block item: the block it places and its own item id.
-    Block { block: &'a str, item: &'a str },
+    BlockItem { block: &'a str, item: &'a str },
     /// The framed hammer (`FramedConstants.Objects.FRAMED_HAMMER`).
     Hammer,
     /// Anything else, an empty hand included.
@@ -68,11 +68,21 @@ pub fn is_camo_block(block: &str) -> bool {
     !block.is_empty() && block != AIR && block != FRAMED_CUBE
 }
 
+/// Whether a held stack may become a frame's camo. The frame's saved compound
+/// keeps only the camo block's and item's ids (`Camo`/`CamoItem`), so a stack
+/// whose components or damage carry data — a filled shulker box, a written
+/// book's block form, a worn item — would come back as a plain stack when the
+/// camo is removed or the frame broken. Such a stack is refused instead of
+/// being stored lossily.
+pub fn may_be_camo(components: bool, damage: u32) -> bool {
+    !components && damage == 0
+}
+
 /// What a right click on a framed block does, from the held item and the camo
 /// already set on the frame.
 pub fn camo_action<'a>(held: Held<'a>, camo: Option<&str>) -> CamoAction<'a> {
     match (held, camo.filter(|block| is_camo_block(block))) {
-        (Held::Block { block, item }, None) if is_camo_block(block) => {
+        (Held::BlockItem { block, item }, None) if is_camo_block(block) => {
             CamoAction::Apply { block, item }
         }
         (Held::Hammer, Some(_)) => CamoAction::Remove,
@@ -125,10 +135,23 @@ pub fn parse_camo_command(line: &str) -> Option<[i32; 3]> {
 mod tests {
     use super::*;
 
-    const STONE: Held<'static> = Held::Block {
+    const STONE: Held<'static> = Held::BlockItem {
         block: "minecraft:stone",
         item: "minecraft:stone",
     };
+
+    #[test]
+    fn a_camo_item_that_carries_data_is_refused_rather_than_come_back_plain() {
+        // A filled shulker box is a block item whose contents live in its component
+        // patch; the frame stores only `{Camo, CamoItem}` ids, so it would hand back an
+        // empty box. A damaged stack has the same problem. A plain stack is stored.
+        assert!(!may_be_camo(true, 0), "components would be lost");
+        assert!(!may_be_camo(false, 1), "damage would be lost");
+        assert!(
+            may_be_camo(false, 0),
+            "a plain block item is what the frame holds"
+        );
+    }
 
     #[test]
     fn a_block_item_on_an_empty_frame_applies_its_block() {
@@ -143,7 +166,7 @@ mod tests {
 
     #[test]
     fn a_framed_block_is_never_a_camo() {
-        let frame = Held::Block {
+        let frame = Held::BlockItem {
             block: FRAMED_CUBE,
             item: FRAMED_CUBE,
         };
@@ -153,7 +176,7 @@ mod tests {
 
     #[test]
     fn air_is_never_a_camo() {
-        let air = Held::Block {
+        let air = Held::BlockItem {
             block: AIR,
             item: AIR,
         };

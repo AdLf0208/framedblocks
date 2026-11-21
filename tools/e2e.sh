@@ -2,14 +2,12 @@
 # In-game check for FramedBlocks' camo: a framed cube whose block entity stores
 # another block and whose client renderer draws that block in the frame's place.
 #
-# STATUS (2026-11-18): this scenario needs a game built by the launcher with this
-# flat SDK package (`horizon-launcher native-build ports/framedblocks --instance <i>
-# --trust-native-code`), because a native mod is compiled into `horizon-client`. The
-# prepared 26.3 resources and `jq` are needed too. The retired `.hnmod`'s embedded
-# content (`.horizon-cache`, `--dev-mod`, the control leg) is gone: the flat package
-# carries `assets/` and `data/` inside itself. The last run of this script was on the
-# retired bundle (`ports/_shared/evidence/framedblocks/e2e-embedded.log`); the SDK
-# migration did not re-run it (no launcher and no game build at `0b14f8a`).
+# STATUS (2026-11-21): this scenario needs a game built by the launcher with this
+# flat SDK package (`ports/tools/launcher-game.sh run framedblocks` does the build and
+# the run), because a native mod is compiled into `horizon-client`. The prepared 26.3
+# resources and `jq` are needed too. The flat package carries `assets/` and `data/`
+# inside itself; `CONTROL_GAME` (the same Nightly without the package) is the control
+# leg, because nothing of this mod then exists in the game.
 #
 # Scene: creative launch (safe teleport), a 5x5 stone platform at y=199 high in
 # the Overworld, the frame at (100,200,100), the player at (100,200,102), then
@@ -27,7 +25,15 @@
 #   5. The framed hammer removes a second camo, the gold block comes back, the
 #      readout says `none`, and breaking then drops no gold.
 #   6. A frame with no camo drops no camo item (control).
-#   7. Save, quit, reopen: the block entity still reads the camo and draws it.
+#   7. `/framedblocks camo <x> <y> <z> <state>` stores a **state**: a grass block camo
+#      reads `minecraft:grass_block[snowy=false]` and draws no snow, the same block
+#      with `snowy=true` reads that state and draws snow, a property the block does not
+#      have is refused without touching the stored camo, and a break drops the state's
+#      item. The snow is the proof the renderer uses the stored properties: the two
+#      screenshots are the same scene and differ only in the state's `snowy`.
+#   8. The carried recipes craft: planks + sticks in the frame pattern give 4 frames
+#      (and consume them), then frames + sticks in the hammer pattern give a hammer.
+#   9. Save, quit, reopen: the block entity still reads the camo and draws it.
 #
 # COUNTERFACTUAL=1 repeats the identical scenario with a diamond block and
 # requires diamond, not gold: a renderer that ignored the stored camo, or one
@@ -35,6 +41,10 @@
 #
 # SELFTEST=1 flips the camo assertion to "minecraft:diamond_block" after a gold
 # click, so the run must FAIL: the proof the assertion can fail.
+# SELFTEST_STATE=1 asserts the stored state is `snowy=false` right after it was set to
+# `snowy=true`, so the run must FAIL: the proof the state assertion can fail.
+# SELFTEST_RECIPE=1 asserts the frame grid's result is a framed hammer, so the run must
+# FAIL: the proof the recipe assertions read the grid's real result.
 #
 # The screenshot check is fail-capable: a block entity renderer that never runs
 # leaves the frame invisible (no brown), and one that draws nothing for a camo
@@ -56,6 +66,15 @@ SKIP_RELOAD=${SKIP_RELOAD:-0}
 # SELFTEST=1 asserts the applied camo is a diamond block while gold was clicked,
 # so the run must FAIL: the proof the camo assertion can fail.
 SELFTEST=${SELFTEST:-0}
+# SELFTEST_STATE=1 asserts the frame's state is the *default* one right after the command
+# stored `snowy=true`, so the run must FAIL: the proof the state assertion can fail.
+SELFTEST_STATE=${SELFTEST_STATE:-0}
+# SELFTEST_RECIPE=1 asserts the frame pattern's result is a framed hammer, so the run must
+# FAIL: the proof the recipe assertions read the grid's real result.
+SELFTEST_RECIPE=${SELFTEST_RECIPE:-0}
+# KEEP=1 keeps the scratch folder (screenshots and the world) after the run, for a leg
+# that has to be looked at rather than read.
+KEEP=${KEEP:-0}
 # The launcher-built game carries the mod, so no --dev-mod is passed. A game
 # built from source without it has neither the block nor the code: point
 # DEV_MOD=1 at a content folder only if you are testing the content alone.
@@ -132,7 +151,13 @@ def cyan(r, g, b):
 def brown(r, g, b):
     return 25 <= r <= 150 and 15 <= g <= 120 and b <= 90 and r >= g >= b and r - b >= 18
 
-match = {"gold": gold, "cyan": cyan, "brown": brown}[kind]
+# Snow over dirt: the pale, slightly cool band `grass_block_snow` draws, which the
+# plain grass side has none of. `white` would count the survival HUD's hearts and the
+# chat text too, and those are in both shots.
+def snow(r, g, b):
+    return b >= r and g >= r + 5 and g > 165 and b > 165
+
+match = {"gold": gold, "cyan": cyan, "brown": brown, "snow": snow}[kind]
 count = 0
 for i in range(0, len(data), 3):
     if match(data[i], data[i + 1], data[i + 2]):
@@ -153,6 +178,17 @@ expect_no_colour() { # file colour maximum message
     n=$(count_colour "$1" "$2")
     echo "  $2 pixels in $(basename "$1"): $n"
     [ "$n" -le "$3" ] || fail "$4 (expected at most $3 $2 pixels, saw $n)"
+}
+
+# The same scene with and without a state's property: the difference in `colour`
+# pixels is what that property draws. A constant background (sky, platform, hand)
+# cancels out, so this is the differential a renderer ignoring the stored state fails.
+expect_more_colour() { # more less colour delta message
+    local more less
+    more=$(count_colour "$1" "$3")
+    less=$(count_colour "$2" "$3")
+    echo "  $3 pixels: $more with the state, $less without"
+    [ $((more - less)) -ge "$4" ] || fail "$5 (expected $4 more $3 pixels, saw $((more - less)))"
 }
 
 # The server's block entity readout for a frame: `/framedblocks camo x y z`.
@@ -182,6 +218,34 @@ expect_camo() { # pos-x pos-y pos-z expected-substring message
         *"$4"*) ;;
         *) fail "$5 (read '"$line"', expected '$4')" ;;
     esac
+}
+
+# The open inventory/crafting menu: the slot holding `item`, or -1.
+menu_slot() {
+    ctl screen | jq -r --arg i "$1" '[.slots[] | select(.item == $i) | .slot] | first // -1'
+}
+
+# The crafting result slot's stack, as `item count`.
+result_stack() {
+    ctl screen | jq -r '.slots[] | select(.slot == 200) | "\(.item) \(.count)"'
+}
+
+# A free inventory slot of the open menu (9 to 35: the menu's player inventory).
+free_menu_slot() {
+    ctl screen | jq -r '[.slots[] | select(.item == null and .slot >= 9 and .slot <= 35) | .slot] | first // -1'
+}
+
+# One crafting-table grid: pick the stack `item` up and right-click one into each
+# grid slot given (100 to 108, row-major, 200 the result). The stack given must be
+# exactly the number of slots, so nothing is left on the cursor.
+fill_grid() { # item slot...
+    local item=$1 slot
+    shift
+    local from
+    from=$(menu_slot "$item")
+    [ "$from" -ge 0 ] || fail "$item never reached the crafting menu"
+    ctl click-slot "$from" >/dev/null
+    for slot in "$@"; do ctl click-slot "$slot" right >/dev/null; done
 }
 
 # The server processes the use packet after the ctl reply, so apply and then
@@ -240,7 +304,11 @@ cleanup() {
     rc=$?
     ctl quit >/dev/null 2>&1 || true
     sleep 1
-    rm -rf "$SCRATCH" || true
+    if [ "$KEEP" = 1 ]; then
+        echo "  kept: $SCRATCH"
+    else
+        rm -rf "$SCRATCH" || true
+    fi
     echo "EXIT:$rc"
 }
 trap cleanup EXIT
@@ -327,10 +395,116 @@ plain_camo=$(echo "$plain" | jq -r --arg i "$CAMO" '.drops[$i] // 0')
 [ "$plain_frame" -ge 1 ] || fail "breaking the plain frame dropped no framed_cube"
 [ "$plain_camo" -eq 0 ] || fail "a frame without a camo dropped $CAMO anyway"
 
+echo "== 7. the camo is a block state and the client draws its properties =="
+ctl setblock "$FX" "$FY" "$FZ" framedblocks:framed_cube >/dev/null
+ctl wait 20 >/dev/null
+# The default state of a grass block has no snow: its side is dirt and grass, no white.
+ctl chat "/framedblocks camo $FX $FY $FZ minecraft:grass_block" >/dev/null
+ctl wait 10 >/dev/null
+expect_camo "$FX" "$FY" "$FZ" "minecraft:grass_block[snowy=false]" \
+    "the command did not store the block's default state"
+if [ "$SELFTEST_STATE" = 1 ]; then
+    echo "== SELFTEST_STATE: the stored state must read minecraft:grass_block[snowy=true] (it does not) =="
+    expect_camo "$FX" "$FY" "$FZ" "minecraft:grass_block[snowy=true]" \
+        "selftest: the stored state was asserted to be snowy=true after snowy=false"
+fi
+aim
+PLAIN_STATE=$SCRATCH/state-plain.png
+shot "$PLAIN_STATE"
+# The snow band is measured in the two shots of the same scene: the plain state has 153
+# "snow" pixels, the snowy one 20,840 (2026-11-21), so the state is what is being drawn.
+expect_no_colour "$PLAIN_STATE" snow 1200 "a grass camo with snowy=false already drew snow"
+# `/setblock`'s own state syntax: the same block, one property changed.
+ctl chat "/framedblocks camo $FX $FY $FZ minecraft:grass_block[snowy=true]" >/dev/null
+ctl wait 10 >/dev/null
+expect_camo "$FX" "$FY" "$FZ" "minecraft:grass_block[snowy=true]" \
+    "the command did not store the state's property"
+aim
+SNOWY=$SCRATCH/state-snowy.png
+shot "$SNOWY"
+expect_colour "$SNOWY" snow 8000 "the snowy state was not drawn at all"
+expect_more_colour "$SNOWY" "$PLAIN_STATE" snow 6000 \
+    "the renderer ignored the state's properties: snowy=true drew no more snow than snowy=false"
+# A property the block does not have is refused, and the stored camo is untouched.
+ctl chat "/framedblocks camo $FX $FY $FZ minecraft:stone[nope=1]" >/dev/null
+ctl wait 10 >/dev/null
+refusal=$(ctl messages 40 | jq -r '.chat[]' | grep -F "is not a block state" | head -1 || true)
+echo "  refusal: $refusal"
+[ -n "$refusal" ] || fail "a property the block does not have was not refused"
+expect_camo "$FX" "$FY" "$FZ" "minecraft:grass_block[snowy=true]" \
+    "a refused state replaced the stored camo"
+# The drop is the state's own item, not a phantom of the property.
+aim
+state_break=$(ctl break "$FX" "$FY" "$FZ" --timeout 30)
+echo "  break: $state_break"
+state_frame=$(echo "$state_break" | jq -r '.drops["framedblocks:framed_cube"] // 0')
+state_camo=$(echo "$state_break" | jq -r '.drops["minecraft:grass_block"] // 0')
+[ "$state_frame" -ge 1 ] || fail "breaking a state-camo'd frame dropped no framed_cube"
+[ "$state_camo" -ge 1 ] || fail "breaking a state-camo'd frame dropped no minecraft:grass_block"
+
+echo "== 8. the carried recipes craft (frame, then hammer) =="
+# Both are 3x3 shaped recipes, so a crafting table: its grid is slots 100-108 and its
+# result 200. The grid is filled one item at a time from a cursor stack, so each `give`
+# is exactly the number of slots that recipe uses and the cursor is empty afterwards.
+ctl give minecraft:crafting_table 1 >/dev/null
+wait_item minecraft:crafting_table 1 >/dev/null
+select_item minecraft:crafting_table
+ctl place 101 200 102 >/dev/null
+ctl wait 10 >/dev/null
+ctl interact 101 200 102 >/dev/null
+ctl wait 10 >/dev/null
+[ "$(ctl screen | jq -r .craft_size)" = 3 ] || fail "the crafting table did not open its 3x3 grid"
+planks_before=$(count_item minecraft:oak_planks)
+sticks_before=$(count_item minecraft:stick)
+frames_before=$(count_item framedblocks:framed_cube)
+# `PSP / S S / PSP`: P at the four corners, S at the four sides.
+ctl give minecraft:oak_planks 4 >/dev/null
+ctl wait 10 >/dev/null
+ctl give minecraft:stick 4 >/dev/null
+ctl wait 10 >/dev/null
+fill_grid minecraft:oak_planks 100 102 106 108
+fill_grid minecraft:stick 101 103 105 107
+echo "  frame grid result: $(result_stack)"
+if [ "$SELFTEST_RECIPE" = 1 ]; then
+    echo "== SELFTEST_RECIPE: the frame grid must give a framed_hammer (it does not) =="
+    [ "$(result_stack)" = "framedblocks:framed_hammer 1" ] || fail "selftest: the frame grid was asserted to give a framed hammer"
+fi
+[ "$(result_stack)" = "framedblocks:framed_cube 4" ] || fail "the frame recipe did not give 4 framed_cube"
+ctl click-slot 200 shift >/dev/null
+ctl wait 10 >/dev/null
+frames_after=$(count_item framedblocks:framed_cube)
+planks_after=$(count_item minecraft:oak_planks)
+sticks_after=$(count_item minecraft:stick)
+echo "  framed_cube: $frames_before -> $frames_after; planks $planks_before -> $planks_after; sticks $sticks_before -> $sticks_after"
+[ "$frames_after" -eq $((frames_before + 4)) ] || fail "crafting the frame recipe did not add 4 framed_cube"
+[ "$planks_after" -eq "$planks_before" ] || fail "the frame recipe did not consume its planks"
+[ "$sticks_after" -eq "$sticks_before" ] || fail "the frame recipe did not consume its sticks"
+# ` F / SF / S`: F above and right of the middle, S in the middle and bottom left.
+hammer_before=$(count_item framedblocks:framed_hammer)
+ctl give minecraft:stick 2 >/dev/null
+ctl wait 10 >/dev/null
+fill_grid minecraft:stick 104 106
+ctl click-slot "$(menu_slot framedblocks:framed_cube)" >/dev/null
+for slot in 101 105; do ctl click-slot "$slot" right >/dev/null; done
+# Two frames are left on the cursor; the menu's free slot takes them back.
+ctl click-slot "$(free_menu_slot)" shift >/dev/null
+ctl wait 5 >/dev/null
+echo "  hammer grid result: $(result_stack)"
+[ "$(result_stack)" = "framedblocks:framed_hammer 1" ] || fail "the hammer recipe did not give a framed_hammer"
+ctl click-slot 200 shift >/dev/null
+ctl wait 10 >/dev/null
+ctl close >/dev/null
+ctl wait 5 >/dev/null
+hammer_after=$(count_item framedblocks:framed_hammer)
+echo "  framed_hammer: $hammer_before -> $hammer_after; sticks left $(count_item minecraft:stick)"
+[ "$hammer_after" -eq $((hammer_before + 1)) ] || fail "crafting the hammer recipe did not add a framed_hammer"
+[ "$(count_item minecraft:stick)" -eq "$sticks_before" ] || fail "the hammer recipe did not consume its sticks"
+[ "$(count_item framedblocks:framed_cube)" -eq $((frames_after - 2)) ] || fail "the hammer recipe did not consume two frames"
+
 if [ "$SKIP_RELOAD" = 1 ]; then
     echo "SKIP_RELOAD=1: the save/reopen leg is skipped"
 else
-    echo "== 7. the camo survives save and reopen =="
+    echo "== 9. the camo survives save and reopen =="
     ctl setblock "$FX" "$FY" "$FZ" framedblocks:framed_cube >/dev/null
     ctl wait 20 >/dev/null
     apply_camo "$CAMO"
@@ -355,12 +529,16 @@ fi
 ctl quit >/dev/null 2>&1 || true
 trap - EXIT
 sleep 1
-rm -rf "$SCRATCH" || true
+if [ "$KEEP" = 1 ]; then
+    echo "  kept: $SCRATCH"
+else
+    rm -rf "$SCRATCH" || true
+fi
 if [ "$COUNTERFACTUAL" = 1 ]; then
     echo "COUNTERFACTUAL PASS: the same clicks with a diamond block read and drew diamond, not gold"
 elif [ "$SKIP_RELOAD" = 1 ]; then
-    echo "PASS (reload leg skipped): the frame drew its texture, the block entity stored the gold camo, the client drew it, the break returned frame + camo, the hammer removed and returned it, and an uncamo'd frame returned no camo"
+    echo "PASS (reload leg skipped): the frame drew its texture, the block entity stored the gold camo, the client drew it, the break returned frame + camo, the hammer removed and returned it, an uncamo'd frame returned no camo, a command state (snowy=true) read and drew snow that snowy=false did not, and both carried recipes crafted"
 else
-    echo "PASS: the frame drew its texture, the block entity stored the gold camo, the client drew it, the break returned frame + camo, the hammer removed and returned it, an uncamo'd frame returned no camo, and the camo survived save/reopen"
+    echo "PASS: the frame drew its texture, the block entity stored the gold camo, the client drew it, the break returned frame + camo, the hammer removed and returned it, an uncamo'd frame returned no camo, a command state (snowy=true) read and drew snow that snowy=false did not, both carried recipes crafted with their ingredients consumed, and the camo survived save/reopen"
 fi
 echo "EXIT:0"

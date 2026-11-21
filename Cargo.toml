@@ -4,7 +4,7 @@
 # the ATM10 pack ships 10.6.1 for 1.21.1. Local-only until the maintainer
 # approves publishing (ARCHITECTURE.md §8).
 name = "horizon-framedblocks"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 license = "LGPL-3.0-only"
 description = "FramedBlocks for Horizon: a framed cube whose camo is a real block"

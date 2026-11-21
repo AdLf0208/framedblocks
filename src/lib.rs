@@ -1,7 +1,9 @@
 //! FramedBlocks for Horizon — a framed cube whose camo is a real block.
 //!
 //! Upstream's `FramedBlockEntity` keeps a camo in the framed block's block entity, and the
-//! client draws the camo block's model in the frame's place. This is the same shape at the
+//! client draws the camo block's model in the frame's place. The camo is a block **state**
+//! (`minecraft:grass_block[snowy=true]`), split by [`camo_state`] and drawn with the properties
+//! the state carries; a block item still gives its block's default state. This is the same shape at the
 //! SDK: a [`BlockEntityPart`] on `framedblocks:framed_cube` owns the saved data, sends it to
 //! clients, and draws it, and a [`BlockPart`] answers the frame's right click. The camo item a
 //! break gives back rides the loot roll; a frame placed with a block item in the off hand takes
@@ -14,15 +16,18 @@ use std::sync::Mutex;
 
 use mod_api::{
     self, BlockEntityDrawContext, BlockEntityEvent, BlockEntityPart, BlockEntitySubmitEvent,
-    BlockEntityUpdateTagEvent, BlockPart, BlockState, ClientHost, Command, CommandArgument,
-    CommandArgumentValue, Compound, CubeFace, Flow, Hand, Hooks, Identifier, InteractionResult,
-    ItemPart, ItemStack, LevelRef, LevelSide, LivingRef, LootDropsEvent, OnBlockPlacedByEvent,
-    OnDestroyedByPlayerEvent, PlayerRef, RegisterCommandsEvent, Registrar, RegistrationContext,
-    RunModCommandEvent, ServerHost, ServerTickEvent, ServerTickPhase, Tag, Text, UseItemOnEvent,
+    BlockEntityUpdateTagEvent, BlockKey, BlockPart, BlockState, ClientHost, Command,
+    CommandArgument, CommandArgumentValue, Compound, CubeFace, Flow, Hand, Hooks, Identifier,
+    InteractionResult, ItemPart, ItemStack, LevelRef, LevelSide, LivingRef, LootDropsEvent,
+    OnBlockPlacedByEvent, OnDestroyedByPlayerEvent, PlayerRef, RegisterCommandsEvent, Registrar,
+    RegistrationContext, RunModCommandEvent, ServerHost, ServerTickEvent, ServerTickPhase, Tag,
+    Text, UseItemOnEvent,
 };
 
+pub mod camo_state;
 pub mod runtime;
 
+use camo_state::CamoState;
 use runtime::{
     CAMO_ITEM_TAG, CAMO_TAG, CamoAction, FRAME_SPRITE, FRAMED_CUBE, FRAMED_HAMMER, Held, Render,
 };
@@ -49,11 +54,15 @@ impl Hooks for Mod {
         r.item_part(frame_item, FrameItem);
     }
 
-    /// `/framedblocks camo <x> <y> <z>`: the readout the e2e and a player use to see what the
-    /// frame's block entity really stores.
+    /// `/framedblocks camo <x> <y> <z> [state]`: without a state, the readout the e2e and a
+    /// player use to see what the frame's block entity really stores; with one, the way a command
+    /// or a blueprint puts a **state-specific** camo on a frame (a stair's facing, a log's axis)
+    /// that a block item cannot supply.
     fn register_commands(&self, _host: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
+        // One usage with an optional trailing state: the readout, and the write that a state
+        // after the position turns it into (an optional argument is what the tree takes last).
         event.commands.push(Command::new(
-            "framedblocks camo <x:integer> <y:integer> <z:integer>",
+            "framedblocks camo <x:integer> <y:integer> <z:integer> [state:text]",
         ));
     }
 
@@ -76,7 +85,10 @@ impl Hooks for Mod {
         let Some(level) = host.level(&dimension) else {
             return Flow::Continue;
         };
-        let line = describe_camo(host, level, pos);
+        let line = match camo_state_argument(&event.command.arguments) {
+            Some(state) => set_camo(host, level, pos, &state),
+            None => describe_camo(host, level, pos),
+        };
         // Routed to the command's source, as vanilla's own feedback is.
         let _ = host.commands().feedback(Text::literal(line));
         Flow::Cancel
@@ -125,8 +137,8 @@ impl BlockPart for Frame {
         let level = host.level(click.dimension.key().id())?;
         let (camo, camo_item) = camo_at(host, level, click.pos);
         match camo_plan(host, click.stack, camo.as_deref()) {
-            Plan::Apply { block, item } => {
-                if !write_camo(host, level, click.pos, &block, &item) {
+            Plan::Apply { state, item } => {
+                if !write_camo(host, level, click.pos, &state, &item) {
                     return None;
                 }
                 let player = host.player(click.player)?;
@@ -205,15 +217,21 @@ impl BlockEntityPart for Frame {
         Some(tag)
     }
 
-    /// `BlockEntityRenderer.submit`: the camo block's model, or the frame's own texture when no
-    /// camo is set (or the camo's block is not in this client's resources).
+    /// `BlockEntityRenderer.submit`: the camo state's model, or the frame's own texture when no
+    /// camo is set (or the camo's block or one of its properties is not in this client's
+    /// resources).
     fn block_entity_submit(&self, host: &dyn ClientHost, event: &mut BlockEntitySubmitEvent<'_>) {
         let (camo, _) = read_camo(&event.entity.nbt);
-        match runtime::render(camo.as_deref()) {
+        let state = camo.as_deref().and_then(CamoState::parse);
+        let block = state.as_ref().map(CamoState::block);
+        match runtime::render(block) {
             Render::Camo(block) => {
-                let drawn = host
-                    .block_key(block)
-                    .is_some_and(|key| event.draw.block(key, &[]));
+                let drawn = match &state {
+                    Some(state) => host
+                        .block_key(block)
+                        .is_some_and(|key| event.draw.block(key, state.properties())),
+                    None => false,
+                };
                 if !drawn {
                     draw_frame(event.draw);
                 }
@@ -236,7 +254,7 @@ impl ItemPart for FrameItem {
         let Some(level) = placer.level(&*host) else {
             return;
         };
-        if !camo_at(host, level, event.pos).0.is_none() {
+        if camo_at(host, level, event.pos).0.is_some() {
             return;
         }
         let Some(living) = host.living(placer.entity()) else {
@@ -245,10 +263,10 @@ impl ItemPart for FrameItem {
         let Some(offhand) = living.hand_item(&*host, Hand::Off) else {
             return;
         };
-        let Plan::Apply { block, item } = camo_plan(host, Some(&offhand), None) else {
+        let Plan::Apply { state, item } = camo_plan(host, Some(&offhand), None) else {
             return;
         };
-        if !write_camo(host, level, event.pos, &block, &item) {
+        if !write_camo(host, level, event.pos, &state, &item) {
             return;
         }
         if runtime::consumes(placer.is_creative(&*host) == Some(true)) {
@@ -258,9 +276,13 @@ impl ItemPart for FrameItem {
 }
 
 /// What the glue does with a click, in owned strings: [`runtime::camo_action`] borrows its
-/// inputs, and an item's block id is a fresh string from the registry.
+/// inputs, and a camo state is a fresh string from the registry.
 enum Plan {
-    Apply { block: String, item: String },
+    /// Store the camo `state` (the held block's default state) and remember `item` for the drop.
+    Apply {
+        state: String,
+        item: String,
+    },
     Remove,
     None,
 }
@@ -278,21 +300,38 @@ fn camo_plan(host: &dyn ServerHost, stack: Option<&ItemStack>, camo: Option<&str
             _ => Plan::None,
         };
     }
+    // Only a plain stack is stored: the frame keeps the camo's block and item ids, so a
+    // stack carrying components or damage would be handed back as a plain one.
+    if !runtime::may_be_camo(stack.components().is_some(), stack.damage()) {
+        return Plan::None;
+    }
     let Some(block_key) = host.item_block(stack.item()) else {
         return Plan::None;
     };
     let block_id = block_key.id(host);
-    let held = Held::Block {
+    let held = Held::BlockItem {
         block: &block_id,
         item: &item_id,
     };
-    match runtime::camo_action(held, camo) {
-        CamoAction::Apply { block, item } => Plan::Apply {
-            block: block.to_owned(),
+    // A camo set before this slice was a bare block id, which is still a state (the block's
+    // default), so the rules test the block part of whatever is stored.
+    let stored = camo.and_then(CamoState::parse);
+    match runtime::camo_action(held, stored.as_ref().map(CamoState::block)) {
+        CamoAction::Apply { item, .. } => Plan::Apply {
+            state: default_state(host, block_key),
             item: item.to_owned(),
         },
         _ => Plan::None,
     }
+}
+
+/// The state a block item gives a frame: its block's default state, as the state string a client
+/// draws (`BlockItem.getBlock().defaultBlockState()` in `applyCamo`). The bare block id when the
+/// registry cannot serialise it, which is the same state for a block with no properties.
+fn default_state(host: &dyn ServerHost, block: BlockKey) -> String {
+    host.block_state_default(block)
+        .and_then(|state| host.block_state_string(state))
+        .unwrap_or_else(|| block.id(host))
 }
 
 /// The literal path of `/framedblocks camo`, without its arguments.
@@ -312,6 +351,46 @@ fn camo_position(arguments: &[CommandArgument]) -> Option<[i32; 3]> {
     Some([coordinate("x")?, coordinate("y")?, coordinate("z")?])
 }
 
+/// The state `/framedblocks camo <x> <y> <z> <state>` was given, if any.
+fn camo_state_argument(arguments: &[CommandArgument]) -> Option<String> {
+    let argument = arguments.iter().rev().find(|entry| entry.name == "state")?;
+    match &argument.value {
+        CommandArgumentValue::String(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Stores `state` on the frame at `pos` and answers what the block entity now holds. The game
+/// parses and serialises the state, so a property the block does not have (or a value it cannot
+/// take) is refused here rather than stored for a client to draw wrong.
+fn set_camo(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], state: &str) -> String {
+    let [x, y, z] = pos;
+    let Some(parsed) = host.block_state_id(state) else {
+        return format!("framedblocks camo {x} {y} {z} = '{state}' is not a block state");
+    };
+    let Some(canonical) = host.block_state_string(parsed) else {
+        return format!("framedblocks camo {x} {y} {z} = '{state}' is not a block state");
+    };
+    let Some(camo) = CamoState::parse(&canonical) else {
+        return format!("framedblocks camo {x} {y} {z} = '{state}' is not a block state");
+    };
+    if !runtime::is_camo_block(camo.block()) {
+        return format!(
+            "framedblocks camo {x} {y} {z} = {} is never a camo",
+            camo.block()
+        );
+    }
+    let item = host
+        .block_key(camo.block())
+        .and_then(|block| host.block_item(block))
+        .map(|item| item.id(host))
+        .unwrap_or_default();
+    if !write_camo(host, level, pos, &canonical, &item) {
+        return format!("framedblocks camo {x} {y} {z} = no framed block there");
+    }
+    describe_camo(host, level, pos)
+}
+
 /// What `/framedblocks camo <x> <y> <z>` answers for the block entity at `pos`.
 fn describe_camo(host: &dyn ServerHost, level: LevelRef, pos: [i32; 3]) -> String {
     let [x, y, z] = pos;
@@ -324,12 +403,30 @@ fn describe_camo(host: &dyn ServerHost, level: LevelRef, pos: [i32; 3]) -> Strin
     if !ours {
         return format!("framedblocks camo {x} {y} {z} = another block entity");
     }
-    match entity.data(host).map(|data| read_camo(&data)) {
-        Some((Some(camo), Some(item))) => {
-            format!("framedblocks camo {x} {y} {z} = {camo} (item {item})")
-        }
-        _ => format!("framedblocks camo {x} {y} {z} = none"),
+    let stored = entity.data(host).and_then(|data| {
+        let (camo, item) = read_camo(&data);
+        Some((camo?, item))
+    });
+    match stored {
+        Some((camo, Some(item))) => format!(
+            "framedblocks camo {x} {y} {z} = {} (item {item})",
+            canonical_state(host, &camo)
+        ),
+        Some((camo, None)) => format!(
+            "framedblocks camo {x} {y} {z} = {} (no item)",
+            canonical_state(host, &camo)
+        ),
+        None => format!("framedblocks camo {x} {y} {z} = none"),
     }
+}
+
+/// The state as the game writes it back (`BlockStateParser.serialize`), or the stored string
+/// when the registry no longer knows it: the readout must never replace a stored camo with a
+/// different one.
+fn canonical_state(host: &dyn ServerHost, stored: &str) -> String {
+    host.block_state_id(stored)
+        .and_then(|state| host.block_state_string(state))
+        .unwrap_or_else(|| stored.to_owned())
 }
 
 /// Whether `state` is this port's frame.
@@ -352,7 +449,8 @@ fn camo_at(
     read_camo(&data)
 }
 
-/// The camo's block and item from a saved compound.
+/// The camo's state string (`minecraft:grass_block[snowy=true]`) and the item a break gives
+/// back, from a saved compound.
 fn read_camo(compound: &Compound) -> (Option<String>, Option<String>) {
     (
         string_tag(compound, CAMO_TAG),
@@ -368,16 +466,16 @@ fn string_tag(compound: &Compound, key: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-/// Stores the camo on the frame's block entity, through the vanilla write that also saves and
-/// syncs it to clients (`/data merge block`'s path).
+/// Stores the camo state on the frame's block entity, through the vanilla write that also saves
+/// and syncs it to clients (`/data merge block`'s path).
 fn write_camo(
     host: &mut dyn ServerHost,
     level: LevelRef,
     pos: [i32; 3],
-    block: &str,
+    state: &str,
     item: &str,
 ) -> bool {
-    patch_camo(host, level, pos, block, item)
+    patch_camo(host, level, pos, state, item)
 }
 
 /// Clears the camo with empty values a client merges over the old ones.
@@ -389,14 +487,14 @@ fn patch_camo(
     host: &mut dyn ServerHost,
     level: LevelRef,
     pos: [i32; 3],
-    block: &str,
+    state: &str,
     item: &str,
 ) -> bool {
     let Some(entity) = host.block_entity(level, pos) else {
         return false;
     };
     let mut patch = Compound::new();
-    patch.insert(CAMO_TAG.into(), Tag::String(block.into()));
+    patch.insert(CAMO_TAG.into(), Tag::String(state.into()));
     patch.insert(CAMO_ITEM_TAG.into(), Tag::String(item.into()));
     matches!(entity.merge_data(host, patch), Ok(true))
 }
@@ -512,6 +610,27 @@ mod tests {
         assert!(!is_camo_command(&words(&["framedblocks"])));
         assert!(!is_camo_command(&words(&["other", "camo"])));
         assert!(!is_camo_command(&words(&["framedblocks", "camo", "1"])));
+    }
+
+    #[test]
+    fn the_camo_command_takes_a_state_after_the_position() {
+        let string = |name: &str, value: &str| {
+            CommandArgument::new(
+                name.to_owned(),
+                CommandArgumentValue::String(value.to_owned()),
+            )
+        };
+        assert_eq!(
+            camo_state_argument(&[string("state", "minecraft:grass_block[snowy=true]")]).as_deref(),
+            Some("minecraft:grass_block[snowy=true]")
+        );
+        // The readout form carries no state, and a state argument of another type is not one.
+        assert_eq!(camo_state_argument(&[]), None);
+        let integer = |name: &str, value| CommandArgument::new(name.to_owned(), value);
+        assert_eq!(
+            camo_state_argument(&[integer("state", CommandArgumentValue::Integer(1))]),
+            None
+        );
     }
 
     #[test]

@@ -1,5 +1,29 @@
 # Validation
 
+## Pin `0a875da` — 0.2.2, the camo is a block state (2026-11-21)
+
+Launcher-built game at the campaign pin (`ports/tools/launcher-game.sh run framedblocks`).
+
+| Check | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings |
+| `cargo test --offline` | **26 passed**, 0 failed (8 new `camo_state` tests; the red run was 19 passed / 6 failed) |
+| `cargo horizon-mod build` twice after `rm -f Cargo.lock` | 36,119 B, sha256 `aea0763a…7983` (24 entries), `cmp`-identical |
+| `cargo horizon-mod check framedblocks.hmod` | `framedblocks 0.2.2 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, exit 0 |
+| `cargo horizon-mod fits framedblocks.hmod --build 0a875da` | `0a875da  made for`, exit 0 |
+| `cargo horizon-mod fits framedblocks.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 |
+| `verify-sdk-package.py framedblocks` | 1/1 |
+| e2e main | **PASS**, `EXIT:0` — phase 7 stores `minecraft:grass_block[snowy=true]`, reads it back, draws 20,870 snow px against 153 for `snowy=false`, refuses `minecraft:stone[nope=1]` without touching the stored state, and the break drops `minecraft:grass_block` |
+| e2e control (same Nightly, no package) | `EXIT:1` at phase 1 |
+| e2e phase 8 (recipes) | the craft grid gives `framed_cube 4` then `framed_hammer 1`, with planks 4→0, sticks 4→0 (and 0), frames 4→2 |
+| `SELFTEST=1` / `SELFTEST_STATE=1` / `SELFTEST_RECIPE=1` | **FAIL**, `EXIT:1` each — the proof the carried, the state and the recipe assertions can fail |
+| `check-e2e-logs.py framedblocks-e2e --strict` | `logs=7 ok=7`, exit 0 |
+
+Evidence: `../_shared/evidence/framedblocks/sdk-0a875da/` and
+`../_shared/evidence/framedblocks-e2e/e2e-*-0.2.2.log`. The slice, its red proof and its gap line
+are in [notes.md](notes.md#slice-022--the-camo-is-a-block-state-2026-11-21).
+
 > **Superseded (2026-11-18):** the current ladder and package evidence are in
 > [`notes.md`](notes.md#migration-to-the-sdk-format-2026-11-18-sdk-0b14f8a) and
 > `../_shared/evidence/framedblocks/sdk-0b14f8a/`. Everything below is the history of the

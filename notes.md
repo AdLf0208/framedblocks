@@ -10,9 +10,11 @@
 > helper→hook table, build/check evidence, gaps and the changelog. Everything above it is the
 > history of the retired bundle (pin `1d63e0a5`, `.hnmod`, `mixins/`, the staging ladder) and is
 > kept as the record, not as instructions — none of `tools/horizon.py`, `compatibility.json`,
-> `mixins/<id>/` or the `.hnmod` exists any more. `src/runtime.rs` is **byte-identical** to the
-> retired `mixins/framedblocks/runtime.rs` (sha256 `26616be4…d525f`), including the copy inside
-> the built package.
+> `mixins/<id>/` or the `.hnmod` exists any more. `src/runtime.rs` was **byte-identical** to the
+> retired `mixins/framedblocks/runtime.rs` (sha256 `26616be4…d525f`) from 0.2.0 to 0.2.1; 0.2.2
+> renames one variant (`Held::Block` → `Held::BlockItem`, sha256 `d034d5da…8abd`) because the
+> `fits` checker reads a bare `Block` as the SDK's non-exhaustive `type:Block` draft struct — see
+> [Slice 0.2.2](#slice-022--the-camo-is-a-block-state-2026-11-21).
 
 
 Ported from **FramedBlocks** (`XFactHD/FramedBlocks`, **LGPL-3.0-only**).
@@ -177,10 +179,12 @@ answered true, which made a removed camo draw `Camo("")`).
    double blocks, waterlogging, `alt`/`reinforced`/`solid_bg`, glowstone,
    intangibility, overlays, the camo applicator, wrench rotation, camo
    rotation, state cycling and the item's camo preview are not ported.
-2. **Default-state block camos.** Upstream stores the placed `BlockState`; a
-   block item gives its block's default state, and the port stores the block
-   id and draws that default state. A state-specific camo (a stair's facing, a
-   log's axis) is not expressible from an item at this pin.
+2. ~~**Default-state block camos.**~~ **Superseded by 0.2.2**: the camo is a
+   block **state** (`minecraft:grass_block[snowy=true]`), drawn with its
+   properties; a *block item* still gives its block's default state (there is no
+   item that carries a state), and the wrench/applicator that would rotate one
+   are not ported, so a non-default state is set by
+   `/framedblocks camo <x> <y> <z> <state>` (a command or a blueprint).
 3. **The camo returns on a player break only.** `on_destroyed_by_player` is
    player-only; an explosion, mob or piston break still drops the frame from
    its loot table but loses the camo. Upstream returns the camo for any break.
@@ -554,11 +558,12 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
    and the screenshots (they already do).
 3. **The spawner template is legacy** (see Content): it no longer decides block entity creation,
    but swapping it for a plain template is a content change that needs the in-game run to confirm.
-4. **State-specific camos are still not expressible from an item** (inherited): a block item gives
-   its block's default state; the port stores the block id and draws that default state. An SDK
-   `BlockState` *could* be stored in the saved data (a block id plus properties), but the item
-   path only ever supplies the default; a later slice should store a full state for a camo placed
-   by a command/blueprint.
+4. ~~**State-specific camos are still not expressible from an item**~~ — **closed by 0.2.2**
+   (2026-11-21): the block entity stores the full state string and the renderer draws it with its
+   properties, so `/framedblocks camo <x> <y> <z> minecraft:grass_block[snowy=true]` works and is
+   drawn (see [Slice 0.2.2](#slice-022--the-camo-is-a-block-state-2026-11-21)). What stays open is
+   the *player* route to a non-default state: upstream's wrench rotation and camo applicator, and
+   the blueprint, are still not ported.
 
 ### Changelog for the resubmission
 
@@ -573,3 +578,220 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `setChanged` and client sync) instead of a pin-internal block-entity write, and the hand item is
 > consumed with `LivingRef::set_hand_item` instead of the hub's inventory resend. `runtime.rs` and
 > its 12 tests are byte-identical to the retired bundle's.
+
+## Review fixes (2026-11-18) — registry source review #1209
+
+Skills: superpowers/using-superpowers,systematic-debugging,test-driven-development,verification-before-completion; BeautifulRust/rust-best-practices
+
+File: `var/review-all/1209-framedblocks.md`. Package **0.2.1**, `framedblocks.hmod` 32,045 B,
+sha256 `c1fa1450fd3a25b8335a55bd0bec5c3c58544caa85140e7b4772fe89cdc2a225`.
+
+1. **`src/lib.rs:251`/`:144`/`:172` an off-hand camouflage consumed a block item but stored only
+   its block and item ids, so a component-bearing block item (a filled shulker box) came back as
+   a plain item on removal or break.** The frame now refuses such a camo instead of storing it
+   lossily: `runtime::may_be_camo(components, damage)` is false for a stack with a component patch
+   or damage, and `camo_plan` returns `Plan::None` for it (the click is left to the game, nothing
+   is consumed). Pinned by
+   `a_camo_item_that_carries_data_is_refused_rather_than_come_back_plain` (unit). `cargo test`:
+   **17 passed**. Clippy also caught one pre-existing `!x.is_none()` in the placement path, fixed.
+
+**In-game leg.** `ports/tools/launcher-game.sh run framedblocks` → `PASS` + `E2E EXIT:0`
+(`ports/_shared/evidence/framedblocks-e2e/e2e-launcher.log`); the package-less Nightly fails at the
+first phase (`…-control.log`, `EXIT:1`). The camo tests still store and return a plain block item;
+a component-bearing one is refused by the unit test above.
+
+## Slice 0.2.2 — the camo is a block state (2026-11-21)
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` + horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API 0.2, launcher 0.2.92, game 26.3.
+**Version 0.2.2.** Class **content**, tier **deep** (unchanged): the slice changes what the
+block-entity renderer draws and what the block entity stores, and adds no machine or menu.
+
+### The gap it comes from
+
+The port's own gap list, verbatim:
+
+> 4. **State-specific camos are still not expressible from an item** (inherited): a block item
+> gives its block's default state; the port stores the block id and draws that default state. An
+> SDK `BlockState` *could* be stored in the saved data (a block id plus properties), but the item
+> path only ever supplies the default; a later slice should store a full state for a camo placed
+> by a command/blueprint.
+
+The jar's own vocabulary agrees that a camo is a state, not a block: `desc.framedblocks.stored_camo
+= Camo: %s` and `tooltip.framedblocks.camo_rotation.true = The targetted camo can be rotated`
+(FramedBlocks 10.6.3), and upstream's apply path reads
+`BlockItem.getBlock().defaultBlockState()` into a camo container that holds a `BlockState`. Until
+0.2.2 the port threw the properties away, so a stair camo could never face east and a log camo
+could never lie down — and every later family that moves a state (the wrench's rotation, the camo
+applicator, the blueprint) had nothing to move.
+
+Tier: this is the deep half the ledger already assigns (custom renderer input + block-entity
+data), not a new tier. The item path is unchanged; the state route is a command (and, later, a
+blueprint).
+
+### What changed
+
+| File | Change |
+|---|---|
+| `src/camo_state.rs` (new) | the pure rule: `CamoState::parse` splits a `/setblock` state (`minecraft:oak_stairs[facing=east,half=top]`) into the block and its properties, and refuses anything a canonical state cannot be (no block, unclosed list, empty list, a property without a name or value, an empty property, text after the list). 8 tests. |
+| `src/lib.rs` | the camo write stores the **state string**; `block_entity_submit` draws `event.draw.block(key, state.properties())`; a block item contributes `block_state_default` + `block_state_string` (exactly the old default-state camo); the readout canonicalises through `block_state_string` and says `(no item)` for a block with none; `/framedblocks camo <x> <y> <z> [state:text]` reads without a state and **sets** with one, refusing (`'…' is not a block state`) anything `block_state_id` will not parse, and `never a camo` for a framed block. |
+| `src/runtime.rs` | the rules and their tests unchanged; one variant renamed `Held::Block` → `Held::BlockItem` (see the trap below). sha256 `d034d5da760d9480364dd10fa85b030e3f73c496a17e00dc4a0f51e1b9478abd`. |
+| `horizon-mod.toml`, `Cargo.toml` | version 0.2.2; `[native]` moved to `0a875da` / `e59da909`; the description names state camos and the command. |
+| `tools/e2e.sh` | phase 7 (the state: default → no snow, `snowy=true` → snow, refusal, drop), phase 8 (both carried recipes crafted through the table grid), `SELFTEST_STATE=1`, `SELFTEST_RECIPE=1`, `KEEP=1`, a `snow` colour counter; phase 9 is the old save/reopen. |
+
+**Old worlds still load**: a stored bare block id (`minecraft:gold_block`) *is* a state string (the
+block's default), so no migration is needed and the readout prints it unchanged.
+
+### Red → green (TDD)
+
+The tests came first, against a stub that kept the whole stored string as the block and no
+properties — 0.2.1's behaviour. Verbatim failure (evidence `sdk-0a875da/red.log`):
+
+```
+---- camo_state::tests::the_properties_after_a_block_id_are_kept_in_order stdout ----
+thread 'camo_state::tests::the_properties_after_a_block_id_are_kept_in_order' (3791854) panicked at src/camo_state.rs:64:9:
+assertion `left == right` failed
+  left: "minecraft:oak_stairs[facing=east,half=top]"
+ right: "minecraft:oak_stairs"
+
+test result: FAILED. 19 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+`the_properties_after_a_block_id_are_kept_in_order`, `a_state_without_a_block_is_refused`,
+`an_unclosed_property_list_is_refused`, `a_property_must_have_a_name_and_a_value`,
+`an_empty_property_is_refused` and `text_after_the_property_list_is_refused` were the six. After the
+parser: `test result: ok. 26 passed; 0 failed`.
+
+### Ladder (0a875da)
+
+`BUILD_LOCAL=1` on every step (the port's `.horizon/sdk` is the 0a875da SDK copied from an
+already-migrated port; the automatic remote forward does not sync it).
+
+| Step | Result |
+|---|---|
+| `cargo fmt --check` | clean (`sdk-0a875da/clippy.log`: `FMT_CLEAN`) |
+| `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** |
+| `cargo test --offline` | **26 passed**, 0 failed (17 carried + 8 `camo_state` + 1 new glue test) (`sdk-test.log`) |
+| `cargo horizon-mod build` twice, `rm -f Cargo.lock` before each | **36,119 B**, sha256 `aea0763a00cc2239a3e014ef1554b8af85f3e9133c361008336b680666887983`, `cmp`-identical (`build.log`) |
+| `cargo horizon-mod check framedblocks.hmod` | `framedblocks 0.2.2 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, 36,119 B, `CHECK_EXIT:0` |
+| `cargo horizon-mod fits framedblocks.hmod --build 0a875da` | `0a875da  made for`, exit 0 |
+| `cargo horizon-mod fits framedblocks.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 (the pin run is a tautology; this one is not) |
+| `python3 ports/tools/verify-sdk-package.py framedblocks` | **1/1** |
+
+### The trap this slice hit: a bare `Block` (and how the state argument had to be `text`)
+
+Three in-game rounds and one `fits` run taught the slice's API edges; each is recorded because the
+next port will meet them:
+
+1. **`fits --build 0b14f8a` failed on 0.2.1's shape** — *"the type `Block` can no longer be built
+   with a literal, and `src/lib.rs:310` builds it"*. The trigger is the *variant* `Held::Block
+   { .. }`: `uses.json` reads a bare `Block` as the SDK's `type:Block` draft struct, which is
+   `non_exhaustive` and not constructible (the same false positive that hit `sushigocrafting`,
+   `toolbelt` and `mekanism`). Renaming the variant to `Held::BlockItem` cleared it; the 0.2.1
+   evidence only ran `fits --build nightly`, which is the `made_for` build and cannot see it.
+2. **A `set` literal after the arguments is not in the tree at this pin.** Two usages (`… <z>` and
+   `… <z> set <state>`), which is how `ironjetpacks` registers a longer form, gave
+   `Incorrect argument for command` at `set` in game.
+3. **`word` cannot carry a state.** `minecraft:grass_block` in a `:word` argument answered
+   `Expected whitespace to end one argument, but found trailing data` — brigadier's unquoted
+   reader stops at `:`, `[`, `]` and `=`.
+4. **What works**: one usage, `framedblocks camo <x:integer> <y:integer> <z:integer>
+   [state:text]` — a greedy `text` argument as the optional last node (the shape `rftoolsbase`'s
+   `[nonce:word]` proved and this slice extends to `text`). Measured in game.
+
+### In game (launcher build at 0a875da)
+
+`ports/tools/launcher-game.sh run framedblocks` → **PASS**, `EXIT:0`
+(`ports/_shared/evidence/framedblocks-e2e/e2e-launcher-0.2.2.log`). Phases 1–6 and 8 are 0.2.1's
+(gold camo by right click, the readout, the draw, the break drop, the hammer, an uncamo'd frame,
+save/reopen); phase 7 is the new family, verbatim:
+
+```
+== 7. the camo is a block state and the client draws its properties ==
+  read: framedblocks camo 100 200 100 = minecraft:grass_block[snowy=false] (item minecraft:grass_block)
+  snow pixels in state-plain.png: 153
+  read: framedblocks camo 100 200 100 = minecraft:grass_block[snowy=true] (item minecraft:grass_block)
+  snow pixels in state-snowy.png: 20870
+  snow pixels: 20870 with the state, 153 without
+  refusal: framedblocks camo 100 200 100 = 'minecraft:stone[nope=1]' is not a block state
+  read: framedblocks camo 100 200 100 = minecraft:grass_block[snowy=true] (item minecraft:grass_block)
+  break: … "drops":{"framedblocks:framed_cube":1,"minecraft:grass_block":1} …
+```
+
+Phase 8 crafts both carried recipes through the crafting table's own grid (the parity rule's
+sharpest case — a carried recipe that is never crafted is dead data):
+
+```
+== 8. the carried recipes craft (frame, then hammer) ==
+  frame grid result: framedblocks:framed_cube 4
+  framed_cube: 1 -> 5; planks 0 -> 0; sticks 0 -> 0
+  hammer grid result: framedblocks:framed_hammer 1
+  framed_hammer: 1 -> 2; sticks left 0
+```
+
+The grid is filled one item at a time (`fill_grid` picks the stack up and right-clicks one into
+each slot), the **result slot 200** is asserted to hold the right id and count *before* it is
+taken, and the post-craft counts prove the ingredients were consumed (planks 4→0, sticks 4→0 and
+0 for the hammer, frames 4→2).
+
+Each assertion can fail, and each was watched failing:
+
+| Leg | Result |
+|---|---|
+| main (`e2e-launcher-0.2.2.log`) | **PASS**, `EXIT:0` |
+| control — the same Nightly **without** the package (`GAME=$CONTROL_GAME`) | `EXIT:1` at phase 1 (there is no `framedblocks:framed_cube` to place) (`e2e-launcher-control-0.2.2.log`) |
+| `SELFTEST=1` (the stored camo asserted to be diamond after a gold click) | **FAIL**, `EXIT:1` (`e2e-selftest-0.2.2.log`) |
+| `SELFTEST_STATE=1` (the stored state asserted to be `snowy=true` after `snowy=false` was set) | **FAIL**, `EXIT:1` (`e2e-selftest-state-0.2.2.log`) |
+| `SELFTEST_RECIPE=1` (the frame grid asserted to give a framed hammer) | **FAIL**, `EXIT:1` (`e2e-selftest-recipe-0.2.2.log`) |
+| `python3 ports/tools/check-e2e-logs.py framedblocks-e2e --strict` | `logs=7 ok=7 missing-exit=0 bad-exit=0`, exit 0 |
+
+The snow is the differential: the two screenshots are the same scene and differ only in the stored
+state's `snowy` property, so a renderer that ignored the properties (0.2.1: 153 vs 153) fails
+`expect_more_colour`, and one that drew nothing fails `expect_colour`. A `snow` colour counter is
+used instead of `white` because the survival HUD and the command's own chat line are white in
+*both* shots (2,601/2,466 measured) — the background cancels out, the state does not.
+
+### Coverage (ruling 2026-11-20)
+
+| Family (jar) | State | Where it is proved |
+|---|---|---|
+| the framed cube block, its item, its block entity | `tested` | e2e phase 1 (`setblock`, texture), phase 2 (empty compound), phase 7/8 (state preserved) |
+| applying a camo with a block item | `tested` | phase 3 (one item consumed, readout, 54,469 gold px) |
+| removing a camo with the framed hammer | `tested` | phase 5 (item back, readout `none`) |
+| the camo item returned on a player break | `tested` | phases 4, 6, 7 (state camo drops `minecraft:grass_block`), 8 |
+| the camo as a **block state** (new) | `tested` | phase 7 (readout + 153 → 20,870 snow px + refusal + `SELFTEST_STATE`) |
+| `/framedblocks camo … [state]` | `tested` | phases 2–8 (read), phase 7 (set, refuse) |
+| the two recipes (`framed_cube`, `framed_hammer`) | `tested` | phase 8: the 3x3 grid crafts each with its declared pattern, the result slot holds `framed_cube 4` / `framed_hammer 1`, the ingredients are consumed (planks 4→0, sticks 4→0 and 0, frames 4→2), and `SELFTEST_RECIPE=1` fails when the frame grid is asserted to give a hammer |
+| `/framedblocks` tab completion | `tested` | implicitly: the tree's kinds are what the refusal and the set prove |
+| every other frame shape, the frame flags, waterlogging | `not ported` | out of this slice (gap 1) |
+| the wrench, camo rotation, camo applicator, blueprint, item camo preview | `not ported` | gap 1/2; the state now exists, the tool does not |
+| frame overlay, sounds/particles, camo rotation overlay | `not ported` | deviations 4/5 |
+| a camo that is itself a block entity | `blocked(draw.block draws the baked model only)` | deviation 6 |
+| the camo on a non-player break (explosion, mob, piston) | `blocked(block_drops carries a LevelHost, which cannot resolve an arbitrary ItemKey)` | deviation 3; the *explosion* pre-capture via `explosion_detonate` is the route a later slice should try |
+
+### Deviations this slice adds
+
+1. **The state route is a command.** Upstream's non-default states come from the wrench (rotation),
+   the camo applicator (a clicked block's state) and the blueprint; none of the three exists yet,
+   so a player can only *read* a state the port already stores, and set one with
+   `/framedblocks camo <x> <y> <z> <state>`.
+2. **A state whose block has no item** (`minecraft:wheat`) stores and draws, and its break drops
+   nothing (`block_item` is None, so `CamoItem` is empty and the readout says `(no item)`); upstream
+   would drop the block's item, which does not exist.
+3. **The readout is canonical**: `block_state_string` writes every property the block has
+   (`minecraft:grass_block[snowy=false]`), where 0.2.1 printed the bare id. The e2e's gold
+   assertions still match because a property-less block serialises as its bare id.
+
+### Changelog for the resubmission
+
+> Version 0.2.2 (supersedes 0.2.1, which superseded #820). The camo is now a full **block state**:
+> the block entity stores `/setblock`'s serialised state (`minecraft:grass_block[snowy=true]`) and
+> the client draws it with those properties, so a stair's facing and a log's axis are expressible.
+> A block item still applies its block's default state; `/framedblocks camo <x> <y> <z> [state]`
+> reads the stored state and sets one (a property the block does not have is refused and the old
+> camo stays), and a break drops the state's item. `src/camo_state.rs` is the new pure parser (8
+> tests); `src/runtime.rs`'s rules are unchanged apart from renaming `Held::Block` to
+> `Held::BlockItem` (`fits --build` read the bare name as the SDK's non-constructible `type:Block`).
+> The `[native]` pins move to `0a875da` / `e59da909`.
